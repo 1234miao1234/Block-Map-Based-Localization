@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Select config/run_MCD/run_<dataset>.yaml from the command line. -->
+    <arg name="dataset" default="ntu_day_02" />
+    <arg name="config_file"
+         default="$(find block_localization)/config/run_MCD/run_$(arg dataset).yaml" />
+    <arg name="nodelet_manager" default="mcd_nodelet_manager" />
+    <arg name="preprocessing_nodelet_manager" default="mcd_preprocessing_nodelet_manager" />
+    <arg name="localization_nodelet_manager" default="mcd_localization_nodelet_manager" />
+    <arg name="use_sim_time" default="true" />
+    <arg name="rviz" default="true" />
+    <arg name="trajectory_output_path"
+         default="/share/ws_Block_Map/results/$(arg dataset)/manual/estimated_trajectory.tum" />
+
+    <param name="/use_sim_time" value="$(arg use_sim_time)" />
+    <rosparam file="$(arg config_file)" command="load" />
+    <param name="/block_localization/trajectory_output_path"
+           value="$(arg trajectory_output_path)" />
+
+    <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)"
+          args="manager" output="screen" />
+    <node pkg="nodelet" type="nodelet" name="$(arg preprocessing_nodelet_manager)"
+          args="manager" output="screen" />
+    <node pkg="nodelet" type="nodelet" name="$(arg localization_nodelet_manager)"
+          args="manager" output="screen" />
+
+    <node pkg="nodelet" type="nodelet" name="points_preprocessing_nodelet"
+          args="load block_localization/PointsPreprocessingNodelet $(arg preprocessing_nodelet_manager)"
+          output="screen" />
+
+    <node pkg="nodelet" type="nodelet" name="globalmap_server_nodelet"
+          args="load block_localization/GlobalmapServerNodelet $(arg nodelet_manager)"
+          output="screen" />
+
+    <node pkg="nodelet" type="nodelet" name="block_localization_nodelet"
+          args="load block_localization/BlockLocalizationNodelet $(arg localization_nodelet_manager)"
+          output="screen" />
+
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
+          args="-d $(find block_localization)/rviz/block_localization.rviz" />
+</launch>

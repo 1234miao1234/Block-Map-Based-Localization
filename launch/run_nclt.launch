@@ -5,19 +5,25 @@
     <!-- params -->
     <rosparam file="$(find block_localization)/config/nclt_params.yaml" command="load" />
     <arg name="nodelet_manager" default="velodyne_nodelet_manager" />
+    <arg name="preprocessing_nodelet_manager" default="points_preprocessing_nodelet_manager" />
+    <arg name="localization_nodelet_manager" default="block_localization_nodelet_manager" />
+    <arg name="rviz" default="true" />
 
-    <!-- in case you use velodyne_driver, comment out the following line -->
+    <!-- Keep preprocessing in a separate process. Loading it into the same
+         manager as BlockLocalizationNodelet causes a shared-library conflict. -->
     <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager" output="screen"/>
+    <node pkg="nodelet" type="nodelet" name="$(arg preprocessing_nodelet_manager)" args="manager" output="screen"/>
+    <node pkg="nodelet" type="nodelet" name="$(arg localization_nodelet_manager)" args="manager" output="screen"/>
 
     <!-- points_preprocessing_nodelet -->
-    <node pkg="nodelet" type="nodelet" name="points_preprocessing_nodelet" args="load block_localization/PointsPreprocessingNodelet $(arg nodelet_manager)" />
+    <node pkg="nodelet" type="nodelet" name="points_preprocessing_nodelet" args="load block_localization/PointsPreprocessingNodelet $(arg preprocessing_nodelet_manager)" />
 
     <!-- globalmap_server_nodelet -->
     <node pkg="nodelet" type="nodelet" name="globalmap_server_nodelet" args="load block_localization/GlobalmapServerNodelet $(arg nodelet_manager)" />
 
     <!-- block_localization_nodelet -->
-    <node pkg="nodelet" type="nodelet" name="block_localization_nodelet" args="load block_localization/BlockLocalizationNodelet $(arg nodelet_manager)" />
+    <node pkg="nodelet" type="nodelet" name="block_localization_nodelet" args="load block_localization/BlockLocalizationNodelet $(arg localization_nodelet_manager)" />
 
     <!-- rviz visualizer -->
-    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find block_localization)/rviz/block_localization.rviz" />
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz" args="-d $(find block_localization)/rviz/block_localization.rviz" />
 </launch>

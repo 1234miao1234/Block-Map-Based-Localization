@@ -39,6 +39,11 @@
 #include <boost/circular_buffer.hpp>
 #include <boost/format.hpp>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <thread>
 #include <mutex>
 #include <memory>
@@ -46,6 +51,7 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <numeric>
 #include <vector>
 
 using namespace std;
@@ -66,6 +72,27 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (VelodynePointXYZIRT,
 using PointT = pcl::PointXYZI;
 using PointIRT = VelodynePointXYZIRT;
 
+// Native Ouster packet layout used by the MCD OS1 bags.  Its per-point time
+// field is an unsigned nanosecond count named `t`, not Velodyne's float
+// seconds field named `time`.
+struct OusterPointXYZIRT {
+    PCL_ADD_POINT4D
+    PCL_ADD_INTENSITY;
+    std::uint32_t t;
+    std::uint16_t reflectivity;
+    std::uint8_t ring;
+    std::uint16_t ambient;
+    std::uint32_t range;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
+    (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)
+    (std::uint32_t, t, t)(std::uint16_t, reflectivity, reflectivity)
+    (std::uint8_t, ring, ring)(std::uint16_t, ambient, ambient)
+    (std::uint32_t, range, range)
+)
+
 class ParamServer
 {
 public:
@@ -77,6 +104,7 @@ public:
     // BlockMap(BM) settings
     double downsample_resolution;
     string globalmap_dir;
+    string trajectory_output_path;
 
     // Gridmap settings
     string yaml_path_;
@@ -90,6 +118,8 @@ public:
     string ndt_neighbor_search_method;
     double ndt_resolution;
     double ndt_epsilon;
+    double ndtLinearNoise;
+    double ndtAngularNoise;
 
     // IMU configuation
     string imuTopic;
@@ -123,6 +153,8 @@ public:
         nh.param<string>("/block_localization/odom_child_frame_id", odom_child_frame_id, "velodyne");
         nh.param<string>("/globalmap_server/globalmap_dir", globalmap_dir, "");
         nh.param<double>("/globalmap_server/downsample_resolution", downsample_resolution, 0.1);
+        nh.param<string>("/block_localization/trajectory_output_path", trajectory_output_path,
+                         globalmap_dir + "blockmap_traj.txt");
         nh.param<string>("/globalmap_server/yaml_path", yaml_path_, "");
         nh.param<string>("/globalmap_server/pgm_path", pgm_path_, "");
 
@@ -133,6 +165,8 @@ public:
         nh.param<string>("/block_localization/ndt_neighbor_search_method", ndt_neighbor_search_method, "DIRECT7");
         nh.param<double>("/block_localization/ndt_resolution", ndt_resolution, 1.0);
         nh.param<double>("/block_localization/ndt_epsilon", ndt_epsilon, 0.01);
+        nh.param<double>("/block_localization/ndtLinearNoise", ndtLinearNoise, 0.10);
+        nh.param<double>("/block_localization/ndtAngularNoise", ndtAngularNoise, 0.03);
 
         nh.param<string>("/block_localization/imuTopic", imuTopic, "/imu_raw");
         nh.param<double>("/block_localization/imuAccNoise", imuAccNoise, 0.01);

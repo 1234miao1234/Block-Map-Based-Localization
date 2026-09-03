@@ -40,7 +40,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(PCL REQUIRED)
 find_package(GTSAM REQUIRED QUIET)
-find_package(Boost REQUIRED)
+find_package(Boost REQUIRED COMPONENTS serialization thread timer chrono system)
 
 add_message_files(
   DIRECTORY msg
@@ -116,6 +116,7 @@ include_directories(
 
 # nodelets
 add_library(block_localization_nodelet src/block_localization_nodelet.cpp)
+add_dependencies(block_localization_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(block_localization_nodelet
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
@@ -125,6 +126,7 @@ target_link_libraries(block_localization_nodelet
 )
 
 add_library(globalmap_server_nodelet src/globalmap_server_nodelet.cpp)
+add_dependencies(globalmap_server_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(globalmap_server_nodelet
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
@@ -134,10 +136,16 @@ target_link_libraries(globalmap_server_nodelet
 )
 
 add_library(points_preprocessing_nodelet src/points_preprocessing_nodelet.cpp)
+add_dependencies(points_preprocessing_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(points_preprocessing_nodelet
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
   yaml-cpp
   gtsam
   tbb
+)
+
+catkin_install_python(PROGRAMS
+  scripts/prepare_evo_reference.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

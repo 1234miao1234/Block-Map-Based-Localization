@@ -36,14 +36,23 @@ public:
     BlockLocalizationNodelet() {
     }
     virtual ~BlockLocalizationNodelet() {
+        if (trajectory_stream_.is_open()) trajectory_stream_.close();
+        if (timing_log_stream_.is_open()) timing_log_stream_.close();
     }
 
 
     void onInit() override {
         nh = getNodeHandle();
 
-        imu2Lidar = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(-extTrans.x(), -extTrans.y(), -extTrans.z())); // T_imu_lidar
-        lidar2Imu = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(extTrans.x(), extTrans.y(), extTrans.z())); // T_lidar_imu
+        // imuConverter() has already rotated acceleration and angular velocity
+        // into the LiDAR axes.  The GTSAM state therefore also uses LiDAR axes;
+        // applying extRot again here would introduce an approximately 180 deg
+        // flip on every optimization cycle.  Only the sensor-origin lever arm
+        // remains between the two poses in this common-axis representation.
+        imu2Lidar = gtsam::Pose3(gtsam::Rot3::Quaternion(1.0, 0.0, 0.0, 0.0),
+                                 gtsam::Point3(-extTrans.x(), -extTrans.y(), -extTrans.z()));
+        lidar2Imu = gtsam::Pose3(gtsam::Rot3::Quaternion(1.0, 0.0, 0.0, 0.0),
+                                 gtsam::Point3(extTrans.x(), extTrans.y(), extTrans.z()));
         // lidar2gt = gtsam::Pose3(gtsam::Rot3(L2GtRot), gtsam::Point3(extTrans.x(), extTrans.y(), extTrans.z())); // T_lidar_gt
         lidar2gt = gtsam::Pose3(gtsam::Rot3(L2GtRot), gtsam::Point3(L2GtTrans.x(), L2GtTrans.y(), L2GtTrans.z()));
 
@@ -56,7 +65,10 @@ public:
         path_pub = nh.advertise<nav_msgs::Path>("/path", 1);
         imuOdom_pub = nh.advertise<nav_msgs::Odometry>("/imu_incremental", 2000);
 
-        mapQuery_client = nh.serviceClient<block_localization::queryMap>("/mapQuery", this);
+        // Use a normal (non-persistent) client.  Passing `this` here used to
+        // convert the pointer to `true`, unintentionally creating a persistent
+        // connection before the separately hosted map server was ready.
+        mapQuery_client = nh.serviceClient<block_localization::queryMap>("/mapQuery");
 
         initializeParams();
     }
@@ -124,13 +136,10 @@ private:
         imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias);
         imuIntegratorImu_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias);
 
-        // poses output file
-        foutC = ofstream(globalmap_dir + "poses.txt", ios::ate);
-        foutC.setf(ios::fixed, ios::floatfield);
+        initializeOutputFiles();
 
         key_count = 0;
         time_count = 0;
-        time_sum = 0;
         systemInitialized = false;
         doneFirstOpt = false;
   }
@@ -256,11 +265,22 @@ private:
                     break;
             }
 
-            // initial pose
-            prevPose_ = prevPose_.compose(lidar2Imu);
+            // Initialize the graph from the configured/interactive LiDAR pose.
+            // prevPose_ is default-constructed as identity, so composing it here
+            // discarded init_pos/init_ori and made the first optimization start
+            // in the wrong place.
+            const gtsam::Pose3 initialLidarPose(
+                gtsam::Rot3::Quaternion(pose_estimator->quat().w(),
+                                        pose_estimator->quat().x(),
+                                        pose_estimator->quat().y(),
+                                        pose_estimator->quat().z()),
+                gtsam::Point3(pose_estimator->pos().x(),
+                              pose_estimator->pos().y(),
+                              pose_estimator->pos().z()));
+            prevPose_ = initialLidarPose.compose(lidar2Imu);
             newgraph.add(PriorFactor<Pose3>(X(0), prevPose_, priorPoseNoise));
             // query initial BM
-            queryMapSwitch(prevPose_);
+            queryMapSwitch(initialLidarPose);
             // initial velocity
             prevVel_ = gtsam::Vector3(0, 0, 0);
             gtsam::PriorFactor<gtsam::Vector3> priorVel(V(0), prevVel_, priorVelNoise);
@@ -319,13 +339,28 @@ private:
         }
 
         // 1. ndt registration, imu integration and optimization
+        const std::uint64_t active_map_revision = map_revision_.load();
+        const bool first_local_map = !timing_has_matched_;
+        const bool map_changed_for_timing =
+            timing_has_matched_ && active_map_revision != last_match_map_revision_;
+        const bool steady_timing_frame = !first_local_map && !map_changed_for_timing;
         gtsam::Pose3 poseFrom = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
                                             gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
         // std::cout<<"prior value: "<<poseFrom.x()<<" "<<poseFrom.y()<<" "<<poseFrom.z()<<" "<<poseFrom.rotation().roll()<<" "
         //                   <<poseFrom.rotation().pitch()<<" "<<poseFrom.rotation().yaw()<<std::endl;
         auto aligned = pose_estimator->correct(filtered);
+        recordMatcherTiming(first_local_map, map_changed_for_timing,
+                            steady_timing_frame, active_map_revision);
         gtsam::Pose3 poseTo_beforeExt = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
                                             gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
+        NODELET_INFO_STREAM_THROTTLE(1.0,
+            "NDT pose xyz=[" << poseTo_beforeExt.x() << ", " << poseTo_beforeExt.y()
+            << ", " << poseTo_beforeExt.z() << "] rpy=["
+            << poseTo_beforeExt.rotation().roll() << ", "
+            << poseTo_beforeExt.rotation().pitch() << ", "
+            << poseTo_beforeExt.rotation().yaw() << "] converged="
+            << pose_estimator->hasConverged() << " fitness="
+            << pose_estimator->fitnessScore());
         // std::cout<<"update value:"<<poseTo.x()<<" "<<poseTo.y()<<" "<<poseTo.z()<<" "<<poseTo.rotation().roll()<<" "
         //                   <<poseTo.rotation().pitch()<<" "<<poseTo.rotation().yaw()<<std::endl;
 
@@ -446,6 +481,10 @@ private:
 
         // transform pose Twb * Tbl = Twl
         lidarPose = prevPose_.compose(imu2Lidar);
+        NODELET_INFO_STREAM_THROTTLE(1.0,
+            "Fused pose xyz=[" << lidarPose.x() << ", " << lidarPose.y() << ", "
+            << lidarPose.z() << "] rpy=[" << lidarPose.rotation().roll() << ", "
+            << lidarPose.rotation().pitch() << ", " << lidarPose.rotation().yaw() << "]");
         lidarPose_temp=gtsam::Pose3(lidarPose);
 
         // 2. after optimization, re-propagate imu odometry preintegration
@@ -479,7 +518,7 @@ private:
         // save trajectory following TUM format
 
         // Twgt=Twl*Tlgt
-        gt_pose=lidar2gt.compose(lidarPose);
+        gt_pose=lidarPose.compose(lidar2gt);
         saveTUMTraj(points_curr_time, gt_pose);
 
         points_pre_time = points_curr_time;
@@ -526,6 +565,9 @@ private:
         // NODELET_INFO("globalmap received!");
         pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>());
         pcl::fromROSMsg(*points_msg, *cloud);
+        // Matching and target replacement must not touch the registration
+        // object concurrently when nodelets run in separate managers.
+        std::lock_guard<std::mutex> estimator_lock(pose_estimator_mutex);
         if(!map_init) {
             globalmap = cloud;
             prev_globalmap = globalmap;
@@ -533,9 +575,14 @@ private:
             pcl::compute3DCentroid(*globalmap, curr_centroid);
             prev_centroid = curr_centroid;
             map_init = true;
+            map_revision_.fetch_add(1);
         } else {
+            gtsam::Vector4 next_centroid;
+            pcl::compute3DCentroid(*cloud, next_centroid);
+            const bool map_changed = !curr_centroid.isApprox(next_centroid, 1e-5);
             globalmap = cloud;
-            pcl::compute3DCentroid(*globalmap, curr_centroid);
+            curr_centroid = next_centroid;
+            if (map_changed) map_revision_.fetch_add(1);
         }
     }
 
@@ -609,17 +656,94 @@ private:
     }
 
 
-    void saveTUMTraj(double timestamp, gtsam::Pose3 pose) {
-        ofstream foutC(globalmap_dir + "poses.txt", ios::app);
-        foutC.setf(ios::fixed, ios::floatfield);
-        foutC.precision(6);
-        foutC << timestamp << " ";
-        foutC.precision(6);
-
+    void saveTUMTraj(double timestamp, const gtsam::Pose3& pose) {
+        if (!trajectory_stream_.is_open()) return;
         Eigen::Quaterniond quat(pose.rotation().toQuaternion().w(), pose.rotation().toQuaternion().x(), pose.rotation().toQuaternion().y(), pose.rotation().toQuaternion().z());
         quat.normalize();
         auto trans = pose.translation();
-        foutC << trans.x() << " " << trans.y() << " " << trans.z() << " " << quat.x() << " " << quat.y() << " " << quat.z() << " " << quat.w() << endl;
+        trajectory_stream_ << std::fixed << std::setprecision(9)
+                           << timestamp << " " << trans.x() << " " << trans.y() << " "
+                           << trans.z() << " " << quat.x() << " " << quat.y() << " "
+                           << quat.z() << " " << quat.w() << '\n';
+        trajectory_stream_.flush();
+    }
+
+
+    void initializeOutputFiles() {
+        const auto ensure_parent = [this](const std::string& filename) {
+            if (filename.empty()) return false;
+            const std::filesystem::path path(filename);
+            const auto parent = path.parent_path();
+            if (parent.empty()) return true;
+            std::error_code error;
+            std::filesystem::create_directories(parent, error);
+            if (error) {
+                NODELET_ERROR_STREAM("Cannot create output directory " << parent
+                                     << ": " << error.message());
+                return false;
+            }
+            return true;
+        };
+
+        if (ensure_parent(trajectory_output_path)) {
+            trajectory_stream_.open(trajectory_output_path, std::ios::out | std::ios::trunc);
+            if (trajectory_stream_) {
+                NODELET_INFO_STREAM("TUM trajectory output: " << trajectory_output_path);
+            } else {
+                NODELET_ERROR_STREAM("Cannot open trajectory output: " << trajectory_output_path);
+            }
+        }
+
+        timing_log_output_path_ =
+            (std::filesystem::path(globalmap_dir) / "blockmap_timing.log").string();
+        if (ensure_parent(timing_log_output_path_)) {
+            timing_log_stream_.open(timing_log_output_path_,
+                                    std::ios::out | std::ios::trunc);
+            if (timing_log_stream_) {
+                NODELET_INFO_STREAM("Matcher timing log: " << timing_log_output_path_);
+            } else {
+                NODELET_ERROR_STREAM("Cannot open matcher timing log: "
+                                     << timing_log_output_path_);
+            }
+        }
+
+    }
+
+
+    void recordMatcherTiming(bool first_local_map, bool map_changed, bool steady,
+                             std::uint64_t map_revision) {
+        ++timing_frame_count_;
+        const bool success = pose_estimator->hasConverged();
+        const std::uint64_t matcher_total_us = pose_estimator->matcherTotalTimeUs();
+        const std::uint64_t correspondence_us = pose_estimator->correspondenceTimeUs();
+
+        if (!pose_estimator->hasCorrespondenceTiming() && !timing_unsupported_warned_) {
+            NODELET_WARN("Correspondence timing is only available for NDT_OMP; "
+                         "GICP_OMP records matcher_total_us only.");
+            timing_unsupported_warned_ = true;
+        }
+
+        NODELET_INFO_STREAM("[BLOCKMAP_TIMING] frame=" << timing_frame_count_
+            << ",first_local_map=" << static_cast<int>(first_local_map)
+            << ",map_changed=" << static_cast<int>(map_changed)
+            << ",steady=" << static_cast<int>(steady)
+            << ",success=" << static_cast<int>(success)
+            << ",correspondence_us=" << correspondence_us
+            << ",matcher_total_us=" << matcher_total_us);
+
+        if (timing_log_stream_) {
+            timing_log_stream_ << "[BLOCKMAP_TIMING] frame=" << timing_frame_count_
+                               << ",first_local_map=" << static_cast<int>(first_local_map)
+                               << ",map_changed=" << static_cast<int>(map_changed)
+                               << ",steady=" << static_cast<int>(steady)
+                               << ",success=" << static_cast<int>(success)
+                               << ",correspondence_us=" << correspondence_us
+                               << ",matcher_total_us=" << matcher_total_us << '\n';
+            timing_log_stream_.flush();
+        }
+
+        timing_has_matched_ = true;
+        last_match_map_revision_ = map_revision;
     }
 
 
@@ -631,12 +755,17 @@ private:
         
         mapqry_pre_time = points_curr_time;
 
-        ros::service::waitForService("/mapQuery");
+        if (!ros::service::waitForService("/mapQuery", ros::Duration(2.0))) {
+            NODELET_ERROR_THROTTLE(2.0, "Map query service is unavailable.");
+            return;
+        }
         block_localization::queryMap qry;
         qry.request.position.x = pose.x();
         qry.request.position.y = pose.y();
         qry.request.position.z = pose.z();
-        mapQuery_client.call(qry);
+        if (!mapQuery_client.call(qry) || !qry.response.success) {
+            NODELET_ERROR_THROTTLE(2.0, "Map query failed.");
+        }
     }
 
 
@@ -692,6 +821,7 @@ private:
     gtsam::Vector4 curr_centroid;
     pcl::Filter<PointT>::Ptr downsample_filter;
     pcl::Registration<PointT, PointT>::Ptr registration;
+    std::atomic<std::uint64_t> map_revision_{0};
 
     // pose estimator
     std::mutex pose_estimator_mutex;
@@ -702,12 +832,14 @@ private:
     double sum_ang_vel;
     double average_ang_vel;
 
-    // processing time buffer
-    double time_sum;
-    double time_avg;
-
-    // poses.txt
-    ofstream foutC;
+    // EVO trajectory and per-frame matcher timing outputs.
+    std::ofstream trajectory_stream_;
+    std::ofstream timing_log_stream_;
+    std::string timing_log_output_path_;
+    std::uint64_t timing_frame_count_ = 0;
+    std::uint64_t last_match_map_revision_ = 0;
+    bool timing_has_matched_ = false;
+    bool timing_unsupported_warned_ = false;
 
 
 public:

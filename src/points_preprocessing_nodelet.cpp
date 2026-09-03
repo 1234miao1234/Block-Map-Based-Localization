@@ -134,7 +134,28 @@ public:
 
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
-        pcl::moveFromROSMsg(currentCloudMsg, *lidarCloudIn);
+
+        const bool hasOusterTime = std::any_of(
+            currentCloudMsg.fields.begin(), currentCloudMsg.fields.end(),
+            [](const sensor_msgs::PointField& field) { return field.name == "t"; });
+        if (have_ring_time_channel && hasOusterTime) {
+            pcl::PointCloud<OusterPointXYZIRT> ousterCloud;
+            pcl::fromROSMsg(currentCloudMsg, ousterCloud);
+            lidarCloudIn->clear();
+            lidarCloudIn->reserve(ousterCloud.size());
+            for (const auto& source : ousterCloud.points) {
+                PointIRT point;
+                point.x = source.x;
+                point.y = source.y;
+                point.z = source.z;
+                point.intensity = source.intensity;
+                point.ring = static_cast<std::uint16_t>(source.ring);
+                point.time = static_cast<float>(source.t) * 1e-9f;
+                lidarCloudIn->push_back(point);
+            }
+        } else {
+            pcl::moveFromROSMsg(currentCloudMsg, *lidarCloudIn);
+        }
 
         // for no ring and time channel pointcloud
         if (!have_ring_time_channel) 

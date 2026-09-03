@@ -1,0 +1,72 @@
+block_localization:
+    # MCD TUHH platform: Ouster OS1-64 and VectorNav VN200.
+    odom_child_frame_id: "os_sensor"
+
+    # LiDAR input. MCD bags provide PointXYZI clouds on this topic.
+    lidarTopic: "/os_cloud_node/points"
+    have_ring_time_channel: true
+    lidarMinRange: 1.5
+    lidarMaxRange: 1000.0
+
+    # IMU input and continuous-time white noise parameters.
+    imuTopic: "/vn200/imu"
+    imuAccNoise: 0.03
+    imuGyrNoise: 0.01
+    gravity: 9.81007
+    imuFrequency: 400
+
+    # T_imu_lidar for the TUHH Ouster OS1-64/VectorNav VN200 platform.
+    extrinsicTrans: [-0.04894521120494695,
+                     -0.03126929060348084,
+                     -0.01755515794222565]
+    extrinsicRot: [ 0.9999135040741837, -0.011166365511073898, -0.006949579221822984,
+                    -0.011356389542502144, -0.9995453006865824, -0.02793249526856565,
+                    -0.006634514801117132, 0.02800900135032654, -0.999585653686922 ]
+
+    # The MCD IMU orientation is already expressed in the required world convention.
+    extrinsicRPY: [1.0, 0.0, 0.0,
+                   0.0, 1.0, 0.0,
+                   0.0, 0.0, 1.0]
+
+    # Save estimated poses directly in the LiDAR ground-truth frame.
+    L2gt_t: [0.0, 0.0, 0.0]
+    L2gt_R: [1.0, 0.0, 0.0,
+             0.0, 1.0, 0.0,
+             0.0, 0.0, 1.0]
+
+    # Runtime and block-map retrieval settings.
+    cool_time_duration: 2.0
+    key_interval: 0.1
+    mapqry_interval: 1.0
+
+    # NDT registration settings.
+    ndt_neighbor_search_method: "DIRECT1"
+    ndt_resolution: 2.0
+    ndt_epsilon: 0.01
+    ndtAngularNoise: 0.03
+    ndtLinearNoise: 0.10
+    penalty_thres: 0.6
+    penalty_weight: 1.0
+
+    # GTSAM sliding-window settings.
+    odomLinearNoise: 0.08
+    odomAngularNoise: 0.05
+    active_factors: 120
+    preserve_factors: 10
+
+    # First T_world_lidar pose from tuhh_night_08/lidar_poses.txt after Rx(pi) z-up conversion.
+    # ROS/Eigen parameter order below is w, x, y, z.
+    specify_init_pose: true
+    init_pos_x: -0.038520233818955099
+    init_pos_y: 0.024497011724327299
+    init_pos_z: 0.014486179526383799
+    init_ori_w: 0.99987985350702302
+    init_ori_x: -0.0140200270979379
+    init_ori_y: -0.0033058120647824602
+    init_ori_z: 0.00572616778830593
+
+globalmap_server:
+    # BM-Loc requires a trailing slash, sequential 000.pcd files,
+    # and CentroidCloud.pcd in this directory.
+    globalmap_dir: "/share/ekfndt_folder/ndt_map/ndt_mapping_for_ekfndt/tuhh_night_08_mapping_1m_kf/BlockMap_40_z_up/"
+    downsample_resolution: 0.2

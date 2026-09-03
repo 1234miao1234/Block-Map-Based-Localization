@@ -68,6 +68,45 @@ roslaunch block_localization run_m2dgr.launch
 *Remarks:*
 Since BM-Loc is a map-based localization method, you need to provide the directory where maps are stored. Edit the parameter `globalmap_dir` in `config/*.yaml` files. 
 
+### 3. Trajectory and matcher timing outputs
+
+The localization node creates a fresh EVO-compatible TUM trajectory and a
+per-frame matcher timing log in the same directory as the block-map PCD files.
+No timing CSV files are created.
+
+For MCD, the default files are:
+
+```text
+/share/ekfndt_folder/.../BlockMap_40_z_up/blockmap_traj.txt
+/share/ekfndt_folder/.../BlockMap_40_z_up/blockmap_timing.log
+```
+
+Override the trajectory path when keeping multiple runs:
+
+```bash
+rosparam set /block_localization/trajectory_output_path /path/to/blockmap_traj_run_01.txt
+roslaunch block_localization run_mcd.launch dataset:=ntu_day_02
+```
+
+For a MCD map generated with `generate_bms --z-up`, convert the mapping pose
+file into the same world frame before using evo:
+
+```bash
+rosrun block_localization prepare_evo_reference.py \
+  /share/ekfndt_folder/ndt_map/ndt_mapping_for_ekfndt/ntu_day_02_mapping_1m_kf/lidar_poses.txt \
+  /share/ws_Block_Map/results/ntu_day_02/reference_trajectory_z_up.tum \
+  --pose-order xyzw --z-up
+
+evo_ape tum \
+  /share/ws_Block_Map/results/ntu_day_02/reference_trajectory_z_up.tum \
+  /share/ekfndt_folder/.../BlockMap_40_z_up/blockmap_traj.txt \
+  -a --t_max_diff 0.05
+```
+
+`blockmap_timing.log` contains the `[BLOCKMAP_TIMING]` records. Its fields
+follow the LooseNDT benchmark convention and can be summarized offline when
+needed.
+
 
 ## Citation
 If you use any of this code, please cite our [paper](https://arxiv.org/pdf/2404.18192).

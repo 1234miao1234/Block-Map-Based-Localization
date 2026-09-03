@@ -1,0 +1,72 @@
+block_localization:
+    # MCD NTU platform: Ouster OS1-128 and VectorNav VN100.
+    odom_child_frame_id: "os_sensor"
+
+    # LiDAR input. MCD bags provide PointXYZI clouds on this topic.
+    lidarTopic: "/os_cloud_node/points"
+    have_ring_time_channel: true
+    lidarMinRange: 1.5
+    lidarMaxRange: 1000.0
+
+    # IMU input and continuous-time white noise parameters.
+    imuTopic: "/vn100/imu"
+    imuAccNoise: 0.03
+    imuGyrNoise: 0.01
+    gravity: 9.81007
+    imuFrequency: 400
+
+    # T_imu_lidar for the NTU Ouster OS1-128/VectorNav VN100 platform.
+    extrinsicTrans: [-0.060649229060416594,
+                     -0.012837544242408117,
+                     -0.020492606896077407]
+    extrinsicRot: [ 0.9999346552051229, 0.003477624535771754, -0.010889970036688295,
+                    0.003587143302461965, -0.9999430279821171, 0.010053516443599904,
+                    -0.010854387257665576, -0.01009192338171122, -0.999890161647627 ]
+
+    # The MCD IMU orientation is already expressed in the required world convention.
+    extrinsicRPY: [1.0, 0.0, 0.0,
+                   0.0, 1.0, 0.0,
+                   0.0, 0.0, 1.0]
+
+    # Save estimated poses directly in the LiDAR ground-truth frame.
+    L2gt_t: [0.0, 0.0, 0.0]
+    L2gt_R: [1.0, 0.0, 0.0,
+             0.0, 1.0, 0.0,
+             0.0, 0.0, 1.0]
+
+    # Runtime and block-map retrieval settings.
+    cool_time_duration: 2.0
+    key_interval: 0.1
+    mapqry_interval: 1.0
+
+    # NDT registration settings.
+    ndt_neighbor_search_method: "DIRECT1"
+    ndt_resolution: 2.0
+    ndt_epsilon: 0.01
+    ndtAngularNoise: 0.03
+    ndtLinearNoise: 0.10
+    penalty_thres: 0.6
+    penalty_weight: 1.0
+
+    # GTSAM sliding-window settings.
+    odomLinearNoise: 0.08
+    odomAngularNoise: 0.05
+    active_factors: 120
+    preserve_factors: 10
+
+    # First T_world_lidar pose from ntu_night_04/lidar_poses.txt after Rx(pi) z-up conversion.
+    # ROS/Eigen parameter order below is w, x, y, z.
+    specify_init_pose: true
+    init_pos_x: -0.058900824317945202
+    init_pos_y: 0.013109714098148499
+    init_pos_z: 0.021534126275394298
+    init_ori_w: 0.99997059438371405
+    init_ori_x: 0.0051755055091175497
+    init_ori_y: -0.0053779606562666896
+    init_ori_z: -0.0017612636901604699
+
+globalmap_server:
+    # BM-Loc requires a trailing slash, sequential 000.pcd files,
+    # and CentroidCloud.pcd in this directory.
+    globalmap_dir: "/share/ekfndt_folder/ndt_map/ndt_mapping_for_ekfndt/ntu_night_04_mapping_1m_kf/BlockMap_40_z_up/"
+    downsample_resolution: 0.2

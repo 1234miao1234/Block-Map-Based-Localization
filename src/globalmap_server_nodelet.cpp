@@ -3,6 +3,7 @@
 
 #include <map_server/image_loader.h>
 #include <yaml-cpp/yaml.h>
+#include <mutex>
 
 #ifdef HAVE_NEW_YAMLCPP
 template<typename T>
@@ -30,22 +31,24 @@ public:
 
         loadMapCentroids();
 
-        // load initial BM (using the pose from global localization)
+        // Load and publish the initial BM.  The publisher is latched, so a
+        // localization nodelet which starts later still receives it.
         globalmap = *loadMapFromIdx(0);
-        // service for changing BM
-        mapQueryServer = nh.advertiseService("/mapQuery", &GlobalmapServerNodelet::mapQueryCB, this);
-        // publish globalmap with "latched" publisher
         globalmap_pub = nh.advertise<sensor_msgs::PointCloud2>("/globalmap", 5, true);
-        globalmap_pub_timer = nh.createWallTimer(ros::WallDuration(mapqry_interval), &GlobalmapServerNodelet::pubMapOnce, this, false, true);
+        publishGlobalmap();
+        // Advertise the query service only after the publisher is ready.
+        mapQueryServer = nh.advertiseService("/mapQuery", &GlobalmapServerNodelet::mapQueryCB, this);
     }
 
 private:
-    void pubMapOnce(const ros::WallTimerEvent& event) {
+    void publishGlobalmap() {
         sensor_msgs::PointCloud2 ros_cloud;
-        if (!globalmap.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(globalmap_mutex);
+            if (globalmap.empty()) return;
             pcl::toROSMsg(globalmap, ros_cloud);
-            globalmap_pub.publish(ros_cloud);
         }
+        globalmap_pub.publish(ros_cloud);
     }
 
 
@@ -54,20 +57,40 @@ private:
         PointT searchPoint;
         searchPoint.x = req.position.x;
         searchPoint.y = req.position.y;
-        searchPoint.z = req.position.z;
+        // Block selection is planar.  Using Z here creates positive feedback:
+        // a temporary vertical localization error can select a geographically
+        // unrelated block whose centroid merely has a closer height.
+        searchPoint.z = 0.0f;
         // NODELET_INFO("K-nearest neighbor search at (%f, %f, %f).", searchPoint.x, searchPoint.y, searchPoint.z);
         
         // find nearest block map
         pointIdxNKNSearch.clear();
         pointNKNSquareDistance.clear();
         int k_nearest = centroid_kdtree.nearestKSearch(searchPoint, 2, pointIdxNKNSearch, pointNKNSquareDistance);
+        pcl::PointCloud<PointT> queried_map;
         if (k_nearest == 2) {
-            globalmap.clear();
-            globalmap = (*loadMapFromIdx(pointIdxNKNSearch[0])) + (*loadMapFromIdx(pointIdxNKNSearch[1]));
+            queried_map = (*loadMapFromIdx(pointIdxNKNSearch[0])) +
+                          (*loadMapFromIdx(pointIdxNKNSearch[1]));
         } else if (k_nearest == 1) {
-            globalmap.clear();
-            globalmap = *loadMapFromIdx(pointIdxNKNSearch[0]);
-        } // else BM doesn't need to be changed
+            queried_map = *loadMapFromIdx(pointIdxNKNSearch[0]);
+        } else {
+            res.success = false;
+            return true;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(globalmap_mutex);
+            globalmap.swap(queried_map);
+        }
+        publishGlobalmap();
+        if (k_nearest == 2) {
+            NODELET_INFO("Published block-map pair [%d, %d] for query (%.2f, %.2f).",
+                         pointIdxNKNSearch[0], pointIdxNKNSearch[1],
+                         req.position.x, req.position.y);
+        } else {
+            NODELET_INFO("Published block map [%d] for query (%.2f, %.2f).",
+                         pointIdxNKNSearch[0], req.position.x, req.position.y);
+        }
 
         res.success = true;
         return true;
@@ -129,7 +152,8 @@ private:
             ros::shutdown();
         }
 
-        // build KD-Tree
+        // Block-map lookup is intentionally 2D.
+        for (auto& point : centroid_cloud->points) point.z = 0.0f;
         centroid_kdtree.setInputCloud(centroid_cloud);
     }
 
@@ -173,7 +197,7 @@ private:
 
     ros::ServiceServer mapQueryServer;
     ros::Publisher globalmap_pub;
-    ros::WallTimer globalmap_pub_timer;
+    std::mutex globalmap_mutex;
 
     // block map centroids
     pcl::PointCloud<PointT>::Ptr centroid_cloud;

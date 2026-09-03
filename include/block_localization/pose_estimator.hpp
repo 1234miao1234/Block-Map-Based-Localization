@@ -2,6 +2,9 @@
 #define POSE_ESTIMATOR_HPP
 
 #include <memory>
+#include <limits>
+#include <chrono>
+#include <cstdint>
 #include <ros/ros.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
@@ -125,8 +128,18 @@ namespace block_localization {
             init_guess.block<3, 1>(0, 3) = this->pos().cast<float>();
 
             pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
+            const auto matcher_start = std::chrono::steady_clock::now();
             registration->setInputSource(cloud);
             registration->align(*aligned, init_guess);
+            last_matcher_total_us = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - matcher_start).count());
+            last_converged = registration->hasConverged();
+            last_fitness_score = registration->getFitnessScore();
+            const auto* ndt = dynamic_cast<
+                const pclomp::NormalDistributionsTransform<PointT, PointT>*>(registration.get());
+            correspondence_timing_available = ndt != nullptr;
+            last_correspondence_us = ndt ? ndt->getLastCorrespondenceTimeUs() : 0;
 
 
             Eigen::Matrix4f trans_temp;
@@ -178,6 +191,12 @@ namespace block_localization {
             return Eigen::Quaterniond(state(6),state(7),state(8),state(9)).normalized();
         }
 
+        bool hasConverged() const { return last_converged; }
+        double fitnessScore() const { return last_fitness_score; }
+        std::uint64_t matcherTotalTimeUs() const { return last_matcher_total_us; }
+        std::uint64_t correspondenceTimeUs() const { return last_correspondence_us; }
+        bool hasCorrespondenceTiming() const { return correspondence_timing_available; }
+
 //        Eigen::Matrix4f matrix() const {
 //            Eigen::Matrix4f m = Eigen::Matrix4f::Identity();
 //            m.block<3, 3>(0, 0) = quat().toRotationMatrix();
@@ -206,6 +225,11 @@ namespace block_localization {
         Eigen::MatrixXd process_noise;
 //        std::unique_ptr<kkl::alg::UnscentedKalmanFilterX<float, PoseSystem>> ukf;
         pcl::Registration<PointT, PointT>::Ptr registration;
+        bool last_converged = false;
+        double last_fitness_score = std::numeric_limits<double>::infinity();
+        std::uint64_t last_matcher_total_us = 0;
+        std::uint64_t last_correspondence_us = 0;
+        bool correspondence_timing_available = false;
 
     };
 
