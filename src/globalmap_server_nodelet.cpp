@@ -31,19 +31,16 @@ public:
 
         loadMapCentroids();
 
-        // load initial BM (using the pose from global localization)
+        // Load and publish the initial BM. The publisher is latched so the
+        // localization nodelet receives a valid target immediately.
         globalmap = *loadMapFromIdx(0);
-        // service for changing BM
-        mapQueryServer = nh.advertiseService("/mapQuery", &GlobalmapServerNodelet::mapQueryCB, this);
-        // publish globalmap with "latched" publisher
         globalmap_pub = nh.advertise<sensor_msgs::PointCloud2>("/globalmap", 5, true);
-        globalmap_pub_timer = nh.createWallTimer(
-            ros::WallDuration(mapqry_interval),
-            &GlobalmapServerNodelet::pubMapOnce, this, false, true);
+        publishGlobalmap();
+        mapQueryServer = nh.advertiseService("/mapQuery", &GlobalmapServerNodelet::mapQueryCB, this);
     }
 
 private:
-    void pubMapOnce(const ros::WallTimerEvent& event) {
+    void publishGlobalmap() {
         sensor_msgs::PointCloud2 ros_cloud;
         {
             std::lock_guard<std::mutex> lock(globalmap_mutex);
@@ -59,7 +56,9 @@ private:
         PointT searchPoint;
         searchPoint.x = req.position.x;
         searchPoint.y = req.position.y;
-        searchPoint.z = req.position.z;
+        // Block-map lookup is planar. A temporary vertical localization error
+        // must not select a geographically unrelated block.
+        searchPoint.z = 0.0f;
         // NODELET_INFO("K-nearest neighbor search at (%f, %f, %f).", searchPoint.x, searchPoint.y, searchPoint.z);
         
         // find nearest block map
@@ -81,14 +80,14 @@ private:
             std::lock_guard<std::mutex> lock(globalmap_mutex);
             globalmap.swap(queried_map);
         }
+        publishGlobalmap();
         if (k_nearest == 2) {
-            NODELET_INFO("Selected block-map pair [%d, %d] for query (%.2f, %.2f, %.2f).",
+            NODELET_INFO("Published block-map pair [%d, %d] for query (%.2f, %.2f).",
                          pointIdxNKNSearch[0], pointIdxNKNSearch[1],
-                         req.position.x, req.position.y, req.position.z);
+                         req.position.x, req.position.y);
         } else {
-            NODELET_INFO("Selected block map [%d] for query (%.2f, %.2f, %.2f).",
-                         pointIdxNKNSearch[0], req.position.x, req.position.y,
-                         req.position.z);
+            NODELET_INFO("Published block map [%d] for query (%.2f, %.2f).",
+                         pointIdxNKNSearch[0], req.position.x, req.position.y);
         }
 
         res.success = true;
@@ -151,7 +150,8 @@ private:
             ros::shutdown();
         }
 
-        // build KD-Tree
+        // Use XY only for the centroid KD-tree as well as for query points.
+        for (auto& point : centroid_cloud->points) point.z = 0.0f;
         centroid_kdtree.setInputCloud(centroid_cloud);
     }
 
@@ -195,7 +195,6 @@ private:
 
     ros::ServiceServer mapQueryServer;
     ros::Publisher globalmap_pub;
-    ros::WallTimer globalmap_pub_timer;
     std::mutex globalmap_mutex;
 
     // block map centroids
