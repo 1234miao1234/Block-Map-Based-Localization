@@ -391,9 +391,14 @@ private:
         gtsam::Pose3 poseTo = poseTo_beforeExt.compose(lidar2Imu);
         // add penalty for the effect of the large angular velocity on z-axis in ndt
         if(fabs(average_ang_vel) > penalty_thres)
-            correctionNoise = gtsam::noiseModel::Isotropic::Sigma(6, penalty_weight * fabs(average_ang_vel / penalty_thres));
+            correctionNoise = gtsam::noiseModel::Diagonal::Sigmas(
+                (gtsam::Vector(6) << ndtAngularNoise, ndtAngularNoise, ndtAngularNoise,
+                 ndtLinearNoise, ndtLinearNoise, ndtLinearNoise).finished() *
+                (penalty_weight * fabs(average_ang_vel / penalty_thres)));
         else
-            correctionNoise = gtsam::noiseModel::Isotropic::Sigma(6, 1); // meter
+            correctionNoise = gtsam::noiseModel::Diagonal::Sigmas(
+                (gtsam::Vector(6) << ndtAngularNoise, ndtAngularNoise, ndtAngularNoise,
+                 ndtLinearNoise, ndtLinearNoise, ndtLinearNoise).finished());
         // add pose factor
         gtsam::PriorFactor<gtsam::Pose3> pose_factor(X(key_count), poseTo, correctionNoise);
         newgraph.add(pose_factor);

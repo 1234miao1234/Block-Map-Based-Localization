@@ -118,6 +118,8 @@ public:
     string ndt_neighbor_search_method;
     double ndt_resolution;
     double ndt_epsilon;
+    double ndtLinearNoise;
+    double ndtAngularNoise;
 
     // IMU configuation
     string imuTopic;
@@ -163,6 +165,8 @@ public:
         nh.param<string>("/block_localization/ndt_neighbor_search_method", ndt_neighbor_search_method, "DIRECT7");
         nh.param<double>("/block_localization/ndt_resolution", ndt_resolution, 1.0);
         nh.param<double>("/block_localization/ndt_epsilon", ndt_epsilon, 0.01);
+        nh.param<double>("/block_localization/ndtLinearNoise", ndtLinearNoise, 1.0);
+        nh.param<double>("/block_localization/ndtAngularNoise", ndtAngularNoise, 1.0);
 
         nh.param<string>("/block_localization/imuTopic", imuTopic, "/imu_raw");
         nh.param<double>("/block_localization/imuAccNoise", imuAccNoise, 0.01);
