@@ -43,16 +43,14 @@ block_localization:
     ndt_neighbor_search_method: "DIRECT1"
     ndt_resolution: 2.0
     ndt_epsilon: 0.01
-    ndtAngularNoise: 0.03
-    ndtLinearNoise: 0.10
     penalty_thres: 0.6
     penalty_weight: 1.0
 
     # GTSAM sliding-window settings.
     odomLinearNoise: 0.08
     odomAngularNoise: 0.05
-    active_factors: 120
-    preserve_factors: 10
+    active_factors: 20
+    preserve_factors: 5
 
     # First T_world_lidar pose from ntu_night_04/lidar_poses.txt after Rx(pi) z-up conversion.
     # ROS/Eigen parameter order below is w, x, y, z.
