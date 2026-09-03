@@ -64,11 +64,29 @@ private:
         // find nearest block map
         pointIdxNKNSearch.clear();
         pointNKNSquareDistance.clear();
-        int k_nearest = centroid_kdtree.nearestKSearch(searchPoint, 2, pointIdxNKNSearch, pointNKNSquareDistance);
+        // Normally two neighbouring block maps are sufficient.  Around route
+        // crossings, however, the second and third centroid candidates can be
+        // almost equally close while representing different traversals.  In
+        // that ambiguous case include both candidates so the current scan is
+        // not matched against the wrong branch only.
+        int k_nearest = centroid_kdtree.nearestKSearch(
+            searchPoint, 3, pointIdxNKNSearch, pointNKNSquareDistance);
+        constexpr float ambiguity_margin_m = 5.0f;
+        bool include_third = false;
+        float second_third_gap_m = 0.0f;
+        if (k_nearest >= 3) {
+            second_third_gap_m =
+                std::sqrt(pointNKNSquareDistance[2]) -
+                std::sqrt(pointNKNSquareDistance[1]);
+            include_third = second_third_gap_m <= ambiguity_margin_m;
+        }
         pcl::PointCloud<PointT> queried_map;
-        if (k_nearest == 2) {
+        if (k_nearest >= 2) {
             queried_map = (*loadMapFromIdx(pointIdxNKNSearch[0])) +
                           (*loadMapFromIdx(pointIdxNKNSearch[1]));
+            if (include_third) {
+                queried_map += *loadMapFromIdx(pointIdxNKNSearch[2]);
+            }
         } else if (k_nearest == 1) {
             queried_map = *loadMapFromIdx(pointIdxNKNSearch[0]);
         } else {
@@ -81,7 +99,12 @@ private:
             globalmap.swap(queried_map);
         }
         publishGlobalmap();
-        if (k_nearest == 2) {
+        if (include_third) {
+            NODELET_INFO("Published ambiguous block-map set [%d, %d, %d] for query (%.2f, %.2f), second/third gap %.2f m.",
+                         pointIdxNKNSearch[0], pointIdxNKNSearch[1],
+                         pointIdxNKNSearch[2], req.position.x, req.position.y,
+                         second_third_gap_m);
+        } else if (k_nearest >= 2) {
             NODELET_INFO("Published block-map pair [%d, %d] for query (%.2f, %.2f).",
                          pointIdxNKNSearch[0], pointIdxNKNSearch[1],
                          req.position.x, req.position.y);
