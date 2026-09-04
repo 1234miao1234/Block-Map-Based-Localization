@@ -3,7 +3,7 @@
 
 #include <map_server/image_loader.h>
 #include <yaml-cpp/yaml.h>
-#include <array>
+#include <limits>
 #include <mutex>
 #include <sstream>
 
@@ -69,34 +69,38 @@ private:
         searchPoint.z = 0.0f;
         // NODELET_INFO("K-nearest neighbor search at (%f, %f, %f).", searchPoint.x, searchPoint.y, searchPoint.z);
         
-        // Keep active maps while the vehicle is still inside their XY extent.
-        // The margin prevents centroid-order changes near a block boundary from
-        // withdrawing a map which is still needed by the current scan.
-        constexpr float retention_margin_m = 10.0f;
-        constexpr std::size_t max_active_maps = 3;
-        std::vector<int> selected_indices;
-        for (const int map_idx : active_map_indices_) {
-            if (map_idx < 0 || static_cast<std::size_t>(map_idx) >= map_bounds_.size()) continue;
-            const auto& bounds = map_bounds_[map_idx];
-            if (searchPoint.x >= bounds[0] - retention_margin_m &&
-                searchPoint.x <= bounds[1] + retention_margin_m &&
-                searchPoint.y >= bounds[2] - retention_margin_m &&
-                searchPoint.y <= bounds[3] + retention_margin_m) {
-                selected_indices.push_back(map_idx);
-            }
-        }
-
-        // Fill the remaining slots with the nearest centroid candidates.
+        // Always refresh the two nearest maps. One previous map may be retained
+        // as a third hysteresis candidate, but cannot occupy a nearest-map slot
+        // indefinitely.
         pointIdxNKNSearch.clear();
         pointNKNSquareDistance.clear();
         int k_nearest = centroid_kdtree.nearestKSearch(
-            searchPoint, 3, pointIdxNKNSearch, pointNKNSquareDistance);
-        for (int i = 0; i < k_nearest && selected_indices.size() < max_active_maps; ++i) {
-            const int candidate = pointIdxNKNSearch[i];
-            if (std::find(selected_indices.begin(), selected_indices.end(), candidate) ==
-                selected_indices.end()) {
-                selected_indices.push_back(candidate);
+            searchPoint, 2, pointIdxNKNSearch, pointNKNSquareDistance);
+        std::vector<int> selected_indices(pointIdxNKNSearch.begin(),
+                                          pointIdxNKNSearch.end());
+
+        constexpr float retention_margin_m = 60.0f;
+        int retained_idx = -1;
+        float retained_distance_m = std::numeric_limits<float>::max();
+        const float second_nearest_distance_m = k_nearest >= 2
+            ? std::sqrt(pointNKNSquareDistance[1])
+            : (k_nearest == 1 ? std::sqrt(pointNKNSquareDistance[0]) : 0.0f);
+        for (const int map_idx : active_map_indices_) {
+            if (map_idx < 0 || static_cast<std::size_t>(map_idx) >= centroid_cloud->size()) continue;
+            if (std::find(selected_indices.begin(), selected_indices.end(), map_idx) !=
+                selected_indices.end()) continue;
+            const auto& centroid = centroid_cloud->points[map_idx];
+            const float dx = searchPoint.x - centroid.x;
+            const float dy = searchPoint.y - centroid.y;
+            const float distance_m = std::sqrt(dx * dx + dy * dy);
+            if (distance_m <= second_nearest_distance_m + retention_margin_m &&
+                distance_m < retained_distance_m) {
+                retained_idx = map_idx;
+                retained_distance_m = distance_m;
             }
+        }
+        if (retained_idx >= 0) {
+            selected_indices.push_back(retained_idx);
         }
 
         if (selected_indices.empty()) {
@@ -154,12 +158,6 @@ private:
             voxelgrid->filter(*filtered_cloud);
             tmp_cloud = filtered_cloud;
 
-            PointT min_point;
-            PointT max_point;
-            pcl::getMinMax3D(*tmp_cloud, min_point, max_point);
-            map_bounds_.push_back(
-                {min_point.x, max_point.x, min_point.y, max_point.y});
-            
             globalmap_vec.push_back(tmp_cloud);
         }
         auto t2 = ros::WallTime::now();
@@ -231,7 +229,6 @@ private:
     // map settings
     pcl::PointCloud<PointT> globalmap;
     std::vector<pcl::PointCloud<PointT>::Ptr> globalmap_vec;
-    std::vector<std::array<float, 4>> map_bounds_;
     std::vector<int> active_map_indices_;
 
     ros::ServiceServer mapQueryServer;
