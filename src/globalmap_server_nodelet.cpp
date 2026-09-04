@@ -50,6 +50,11 @@ private:
             if (globalmap.empty()) return;
             pcl::toROSMsg(globalmap, ros_cloud);
         }
+        // Concatenating block clouds into a default-constructed PCL cloud does
+        // not preserve the source header.  Set a valid ROS header explicitly
+        // so RViz can transform and refresh every switched local map.
+        ros_cloud.header.frame_id = "globalmap_link";
+        ros_cloud.header.stamp = ros::Time::now();
         globalmap_pub.publish(ros_cloud);
     }
 
