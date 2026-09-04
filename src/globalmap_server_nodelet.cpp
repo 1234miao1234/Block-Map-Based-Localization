@@ -3,7 +3,9 @@
 
 #include <map_server/image_loader.h>
 #include <yaml-cpp/yaml.h>
+#include <array>
 #include <mutex>
+#include <sstream>
 
 #ifdef HAVE_NEW_YAMLCPP
 template<typename T>
@@ -34,6 +36,7 @@ public:
         // Load and publish the initial BM. The publisher is latched so the
         // localization nodelet receives a valid target immediately.
         globalmap = *loadMapFromIdx(0);
+        active_map_indices_ = {0};
         globalmap_pub = nh.advertise<sensor_msgs::PointCloud2>("/globalmap", 5, true);
         publishGlobalmap();
         mapQueryServer = nh.advertiseService("/mapQuery", &GlobalmapServerNodelet::mapQueryCB, this);
@@ -61,57 +64,59 @@ private:
         searchPoint.z = 0.0f;
         // NODELET_INFO("K-nearest neighbor search at (%f, %f, %f).", searchPoint.x, searchPoint.y, searchPoint.z);
         
-        // find nearest block map
+        // Keep active maps while the vehicle is still inside their XY extent.
+        // The margin prevents centroid-order changes near a block boundary from
+        // withdrawing a map which is still needed by the current scan.
+        constexpr float retention_margin_m = 10.0f;
+        constexpr std::size_t max_active_maps = 3;
+        std::vector<int> selected_indices;
+        for (const int map_idx : active_map_indices_) {
+            if (map_idx < 0 || static_cast<std::size_t>(map_idx) >= map_bounds_.size()) continue;
+            const auto& bounds = map_bounds_[map_idx];
+            if (searchPoint.x >= bounds[0] - retention_margin_m &&
+                searchPoint.x <= bounds[1] + retention_margin_m &&
+                searchPoint.y >= bounds[2] - retention_margin_m &&
+                searchPoint.y <= bounds[3] + retention_margin_m) {
+                selected_indices.push_back(map_idx);
+            }
+        }
+
+        // Fill the remaining slots with the nearest centroid candidates.
         pointIdxNKNSearch.clear();
         pointNKNSquareDistance.clear();
-        // Normally two neighbouring block maps are sufficient.  Around route
-        // crossings, however, the second and third centroid candidates can be
-        // almost equally close while representing different traversals.  In
-        // that ambiguous case include both candidates so the current scan is
-        // not matched against the wrong branch only.
         int k_nearest = centroid_kdtree.nearestKSearch(
             searchPoint, 3, pointIdxNKNSearch, pointNKNSquareDistance);
-        constexpr float ambiguity_margin_m = 5.0f;
-        bool include_third = false;
-        float second_third_gap_m = 0.0f;
-        if (k_nearest >= 3) {
-            second_third_gap_m =
-                std::sqrt(pointNKNSquareDistance[2]) -
-                std::sqrt(pointNKNSquareDistance[1]);
-            include_third = second_third_gap_m <= ambiguity_margin_m;
-        }
-        pcl::PointCloud<PointT> queried_map;
-        if (k_nearest >= 2) {
-            queried_map = (*loadMapFromIdx(pointIdxNKNSearch[0])) +
-                          (*loadMapFromIdx(pointIdxNKNSearch[1]));
-            if (include_third) {
-                queried_map += *loadMapFromIdx(pointIdxNKNSearch[2]);
+        for (int i = 0; i < k_nearest && selected_indices.size() < max_active_maps; ++i) {
+            const int candidate = pointIdxNKNSearch[i];
+            if (std::find(selected_indices.begin(), selected_indices.end(), candidate) ==
+                selected_indices.end()) {
+                selected_indices.push_back(candidate);
             }
-        } else if (k_nearest == 1) {
-            queried_map = *loadMapFromIdx(pointIdxNKNSearch[0]);
-        } else {
+        }
+
+        if (selected_indices.empty()) {
             res.success = false;
             return true;
+        }
+
+        pcl::PointCloud<PointT> queried_map;
+        for (const int map_idx : selected_indices) {
+            queried_map += *loadMapFromIdx(map_idx);
         }
 
         {
             std::lock_guard<std::mutex> lock(globalmap_mutex);
             globalmap.swap(queried_map);
+            active_map_indices_ = selected_indices;
         }
         publishGlobalmap();
-        if (include_third) {
-            NODELET_INFO("Published ambiguous block-map set [%d, %d, %d] for query (%.2f, %.2f), second/third gap %.2f m.",
-                         pointIdxNKNSearch[0], pointIdxNKNSearch[1],
-                         pointIdxNKNSearch[2], req.position.x, req.position.y,
-                         second_third_gap_m);
-        } else if (k_nearest >= 2) {
-            NODELET_INFO("Published block-map pair [%d, %d] for query (%.2f, %.2f).",
-                         pointIdxNKNSearch[0], pointIdxNKNSearch[1],
-                         req.position.x, req.position.y);
-        } else {
-            NODELET_INFO("Published block map [%d] for query (%.2f, %.2f).",
-                         pointIdxNKNSearch[0], req.position.x, req.position.y);
+        std::ostringstream selected_stream;
+        for (std::size_t i = 0; i < selected_indices.size(); ++i) {
+            if (i != 0) selected_stream << ", ";
+            selected_stream << selected_indices[i];
         }
+        NODELET_INFO("Published retained block-map set [%s] for query (%.2f, %.2f).",
+                     selected_stream.str().c_str(), req.position.x, req.position.y);
 
         res.success = true;
         return true;
@@ -143,6 +148,12 @@ private:
             pcl::PointCloud<PointT>::Ptr filtered_cloud(new pcl::PointCloud<PointT>());
             voxelgrid->filter(*filtered_cloud);
             tmp_cloud = filtered_cloud;
+
+            PointT min_point;
+            PointT max_point;
+            pcl::getMinMax3D(*tmp_cloud, min_point, max_point);
+            map_bounds_.push_back(
+                {min_point.x, max_point.x, min_point.y, max_point.y});
             
             globalmap_vec.push_back(tmp_cloud);
         }
@@ -215,6 +226,8 @@ private:
     // map settings
     pcl::PointCloud<PointT> globalmap;
     std::vector<pcl::PointCloud<PointT>::Ptr> globalmap_vec;
+    std::vector<std::array<float, 4>> map_bounds_;
+    std::vector<int> active_map_indices_;
 
     ros::ServiceServer mapQueryServer;
     ros::Publisher globalmap_pub;
